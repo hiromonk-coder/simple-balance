@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>シンプル残高管理（完成版）</title>
+<meta name="app-version" content="完成版・00ボタン対応">
+<style>
+:root{--bg:#f6f7f5;--surface:#fff;--text:#1d2521;--muted:#69736e;--accent:#1f6f52;--accent2:#e5f1eb;--danger:#b84b43;--border:#dfe5e1;--shadow:0 10px 30px #1d252114}
+*{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Noto Sans JP","Yu Gothic",sans-serif}
+button,input,select{font:inherit} button{cursor:pointer;border:0}.app{min-height:100vh}.shell{max-width:720px;margin:auto;min-height:100vh;background:var(--bg)}
+header{height:68px;display:flex;align-items:center;justify-content:space-between;padding:0 18px}.brand{font-weight:800;font-size:19px}.icon{width:42px;height:42px;border-radius:12px;background:var(--surface);box-shadow:var(--shadow);font-size:22px}
+main{padding:18px}.screen{display:none}.screen.active{display:block}.cycle{color:var(--muted);text-align:center;font-size:14px}
+.balance{font-size:clamp(52px,14vw,92px);font-weight:800;letter-spacing:-.04em;text-align:center;margin:44px 0 58px;line-height:1}.yen{font-size:.38em;vertical-align:middle;margin-right:6px}
+.actions{display:grid;gap:12px}.primary{background:var(--accent);color:white;padding:19px;border-radius:18px;font-weight:800;font-size:20px}.secondary{background:var(--accent2);color:var(--accent);padding:15px;border-radius:15px;font-weight:700}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:18px;margin-bottom:14px;box-shadow:var(--shadow)}.row{display:flex;justify-content:space-between;align-items:center;gap:12px}.muted{color:var(--muted)}h2{margin:4px 0 18px;font-size:26px}
+label{display:block;font-weight:700;margin:14px 0 7px}input,select{width:100%;padding:14px;border:1px solid var(--border);border-radius:13px;background:var(--surface);font-size:18px}
+.modal{position:fixed;inset:0;background:#0007;display:none;align-items:flex-end;justify-content:center;padding:14px}.modal.show{display:flex}.sheet{width:min(680px,100%);background:var(--surface);border-radius:24px;padding:20px;max-height:90vh;overflow:auto}
+.amount{font-size:42px;text-align:center;font-weight:800;padding:12px}.numpad{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.numpad button{padding:18px;background:var(--bg);border-radius:14px;font-size:22px}.wide{grid-column:span 2}.danger{color:var(--danger)}
+.menu{position:fixed;inset:0;background:#0006;display:none}.menu.show{display:block}.drawer{position:absolute;right:0;top:0;height:100%;width:min(340px,88%);background:var(--surface);padding:26px}.drawer button{display:block;width:100%;text-align:left;padding:17px;border-radius:12px;background:transparent;font-weight:700}.drawer button:hover{background:var(--bg)}
+.list{display:grid;gap:9px}.item{padding:13px;border-bottom:1px solid var(--border)}.empty{text-align:center;padding:30px;color:var(--muted)}
+.toggle{display:flex;background:var(--bg);padding:4px;border-radius:12px;margin-bottom:15px}.toggle button{flex:1;padding:10px;border-radius:9px;background:transparent}.toggle .on{background:var(--surface);font-weight:800;box-shadow:0 2px 8px #0001}
+.small{font-size:14px}.bigtotal{font-size:36px;font-weight:800}.dangerbtn{background:#fbe9e7;color:var(--danger);padding:13px;border-radius:12px;font-weight:700}
+@media(min-width:700px){.shell{box-shadow:0 0 40px #00000008}}
+</style>
+
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#ffffff">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="残高管理">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-180.png">
+</head>
+<body>
+<div class="app"><div class="shell">
+<header><div class="brand">シンプル残高管理</div><button class="icon" onclick="openMenu()">☰</button></header>
+<main>
+<section id="home" class="screen active">
+<div class="cycle" id="cycleLabel"></div><div class="balance"><span class="yen">¥</span><span id="balance">0</span></div>
+<div class="actions"><button class="primary" onclick="openExpense()">支出を入力</button><button class="secondary" onclick="openInitialIncome()">今月の収入を入力</button><button class="secondary" onclick="openIncome()">臨時収入を入力</button></div>
+</section>
+<section id="history" class="screen"><h2>履歴</h2><div class="toggle"><button id="dailyBtn" class="on" onclick="setHistory('daily')">日単位</button><button id="monthlyBtn" onclick="setHistory('monthly')">月単位</button></div><div id="historyList" class="list"></div></section>
+<section id="carry" class="screen"><h2>繰越金</h2><div class="card"><div class="muted">累積額</div><div class="bigtotal">¥<span id="carryTotal">0</span></div></div><div class="card"><div class="muted">月別実績</div><div id="carryList" class="list"></div></div></section>
+<section id="settings" class="screen"><h2>設定</h2><div class="card"><label>毎月の起点日</label><select id="startDay"></select><button class="primary" style="margin-top:12px;width:100%" onclick="saveStartDay()">保存</button></div><div class="card"><label>文字サイズ</label><div class="toggle" id="sizeToggle"><button onclick="setSize('small')">小</button><button onclick="setSize('medium')">中</button><button onclick="setSize('large')">大</button></div></div><div class="card small muted">データはこのPCのブラウザ内（localStorage）だけに保存され、ネットワーク通信は行いません。</div><button class="dangerbtn" onclick="resetAll()">全データを初期化</button></section>
+</main>
+</div></div>
+<div id="modal" class="modal"><div class="sheet"><div class="row"><h2 id="modalTitle">支出</h2><button onclick="closeModal()">✕</button></div><div class="amount" id="amount">0</div><div class="numpad">
+<button onclick="key('1')">1</button><button onclick="key('2')">2</button><button onclick="key('3')">3</button>
+<button onclick="key('4')">4</button><button onclick="key('5')">5</button><button onclick="key('6')">6</button>
+<button onclick="key('7')">7</button><button onclick="key('8')">8</button><button onclick="key('9')">9</button>
+<button onclick="clearKey()">C</button><button onclick="key('0')">0</button><button onclick="key('00')">00</button><button onclick="backspace()">⌫</button>
+</div><button class="primary" style="width:100%;margin-top:12px" onclick="commitAmount()">確定</button></div></div>
+<div id="menu" class="menu" onclick="closeMenu(event)"><div class="drawer" onclick="event.stopPropagation()"><h2>メニュー</h2><button onclick="go('home')">残高</button><button onclick="go('history')">履歴</button><button onclick="go('carry')">繰越金</button><button onclick="go('settings')">設定</button></div></div>
+<script>
+const KEY='simpleBalanceApp.v1';
+let state=JSON.parse(localStorage.getItem(KEY)||'null')||{startDay:null,cycles:{},events:[],size:'medium'};
+let input='0', mode='expense', historyMode='daily';
+const yen=n=>Number(n||0).toLocaleString('ja-JP');
+function save(){localStorage.setItem(KEY,JSON.stringify(state))}
+function daysInMonth(y,m){return new Date(y,m+1,0).getDate()}
+function cycleStart(d=new Date()){
+ const y=d.getFullYear(),m=d.getMonth(),day=state.startDay;
+ if(!day)return null;
+ let target=day===99?daysInMonth(y,m):Math.min(day,daysInMonth(y,m)); let s=new Date(y,m,target);
+ if(d<s){const pm=new Date(y,m-1,1); target=day===99?daysInMonth(pm.getFullYear(),pm.getMonth()):Math.min(day,daysInMonth(pm.getFullYear(),pm.getMonth())); s=new Date(pm.getFullYear(),pm.getMonth(),target)}
+ return s;
+}
+function cycleKey(d=cycleStart()){return d?d.toISOString().slice(0,10):''}
+function cycleLabel(){const s=cycleStart();return s?s.getFullYear()+'年'+(s.getMonth()+1)+'月期':'起点日を設定してください'}
+function currentCycle(){const k=cycleKey();if(!state.cycles[k])state.cycles[k]={income:0};return state.cycles[k]}
+function balance(){const c=currentCycle();return (c.income||0)+state.events.filter(e=>e.cycle===cycleKey()).reduce((a,e)=>a+(e.type==='income'?e.amount:-e.amount),0)}
+function render(){document.getElementById('cycleLabel').textContent=cycleLabel();document.getElementById('balance').textContent=yen(balance());renderHistory();renderCarry();document.getElementById('startDay').value=state.startDay||''}
+function openMenu(){document.getElementById('menu').classList.add('show')} function closeMenu(){document.getElementById('menu').classList.remove('show')}
+function go(id){document.querySelectorAll('.screen').forEach(x=>x.classList.remove('active'));document.getElementById(id).classList.add('active');closeMenu();render()}
+function openExpense(){mode='expense';input='0';document.getElementById('modalTitle').textContent='支出を入力';showModal()}
+function openIncome(){mode='income';input='0';document.getElementById('modalTitle').textContent='臨時収入を入力';showModal()}
+function openInitialIncome(){mode='initialIncome';input='0';document.getElementById('modalTitle').textContent='今月の収入を入力';showModal()}
+function showModal(){document.getElementById('amount').textContent=yen(input);document.getElementById('modal').classList.add('show')}
+function closeModal(){document.getElementById('modal').classList.remove('show')}
+function key(k){input=(input==='0'?k:input+k).slice(0,10);showModal()} function clearKey(){input='0';showModal()} function backspace(){input=input.length>1?input.slice(0,-1):'0';showModal()}
+function commitAmount(){let n=Number(input);if(!n)return;let c=currentCycle();if(mode==='expense'&&n>balance()){alert('現在の残高を超える支出は入力できません。');return} if(mode==='initialIncome'){c.income=n}else{state.events.push({id:Date.now(),date:new Date().toISOString(),cycle:cycleKey(),type:mode,amount:n})} save();closeModal();render()}
+function renderHistory(){const el=document.getElementById('historyList');el.innerHTML='';if(historyMode==='daily'){[...state.events].sort((a,b)=>b.id-a.id).forEach(e=>{const d=new Date(e.date);el.innerHTML+=`<div class="item"><div class="row"><b>${e.type==='expense'?'支出':'収入'}</b><b>${e.type==='expense'?'-':'+'}¥${yen(e.amount)}</b></div><div class="small muted">${d.toLocaleString('ja-JP')} · ${e.cycle.slice(0,7).replace('-','年')}月期</div></div>`})}else{const sums={};state.events.filter(e=>e.type==='expense').forEach(e=>sums[e.cycle]=(sums[e.cycle]||0)+e.amount);Object.entries(sums).sort().reverse().forEach(([k,v])=>el.innerHTML+=`<div class="item row"><b>${k.slice(0,7).replace('-','年')}月期</b><b>¥${yen(v)}</b></div>`)}if(!el.innerHTML)el.innerHTML='<div class="empty">履歴はありません</div>'}
+function setHistory(m){historyMode=m;document.getElementById('dailyBtn').classList.toggle('on',m==='daily');document.getElementById('monthlyBtn').classList.toggle('on',m==='monthly');renderHistory()}
+function renderCarry(){const entries=Object.entries(state.cycles).map(([k,c])=>{const out=state.events.filter(e=>e.cycle===k).reduce((a,e)=>a+(e.type==='expense'?e.amount:-e.amount),0);return [k,(c.income||0)-Math.max(0,out)]}).filter(x=>x[1]>0);document.getElementById('carryTotal').textContent=yen(entries.reduce((a,x)=>a+x[1],0));document.getElementById('carryList').innerHTML=entries.sort().reverse().map(x=>`<div class="item row"><span>${x[0].slice(0,7).replace('-','年')}月期</span><b>¥${yen(x[1])}</b></div>`).join('')||'<div class="empty">繰越実績はありません</div>'}
+function saveStartDay(){state.startDay=Number(document.getElementById('startDay').value);save();render();alert('設定を保存しました。')}
+function setSize(s){state.size=s;document.documentElement.style.fontSize=s==='large'?'19px':s==='small'?'14px':'16px';save()}
+function resetAll(){if(confirm('すべてのデータを初期化しますか？')){localStorage.removeItem(KEY);location.reload()}}
+(function init(){const sel=document.getElementById('startDay');for(let i=1;i<=31;i++)sel.innerHTML+=`<option value="${i}">${i}日</option>`;sel.innerHTML+='<option value="99">月末</option>';sel.addEventListener('change',()=>{});if(!state.startDay){const d=new Date().getDate();sel.value=d;state.startDay=d;save()}else sel.value=state.startDay===99?99:state.startDay;setSize(state.size);render()})()
+</script>
+
+<script>
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', function () {
+    navigator.serviceWorker.register('./sw.js').catch(function(){});
+  });
+}
+</script>
+</body></html>
