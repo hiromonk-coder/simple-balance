@@ -7,8 +7,7 @@
 <meta name="app-version" content="完成版・00ボタン対応">
 <style>
 :root{--bg:#f6f7f5;--surface:#fff;--text:#1d2521;--muted:#69736e;--accent:#1f6f52;--accent2:#e5f1eb;--danger:#b84b43;--border:#dfe5e1;--shadow:0 10px 30px #1d252114}
-*{box-sizing:border 
- -box} body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Noto Sans JP","Yu Gothic",sans-serif}
+*{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Noto Sans JP","Yu Gothic",sans-serif}
 button,input,select{font:inherit} button{cursor:pointer;border:0}.app{min-height:100vh}.shell{max-width:720px;margin:auto;min-height:100vh;background:var(--bg)}
 header{height:68px;display:flex;align-items:center;justify-content:space-between;padding:0 18px}.brand{font-weight:800;font-size:19px}.icon{width:42px;height:42px;border-radius:12px;background:var(--surface);box-shadow:var(--shadow);font-size:22px}
 main{padding:18px}.screen{display:none}.screen.active{display:block}.cycle{color:var(--muted);text-align:center;font-size:14px}
@@ -44,6 +43,20 @@ label{display:block;font-weight:700;margin:14px 0 7px}input,select{width:100%;pa
 <section id="history" class="screen"><h2>履歴</h2><div class="toggle"><button id="dailyBtn" class="on" onclick="setHistory('daily')">日単位</button><button id="monthlyBtn" onclick="setHistory('monthly')">月単位</button></div><div id="historyList" class="list"></div></section>
 <section id="carry" class="screen"><h2>繰越金</h2><div class="card"><div class="muted">累積額</div><div class="bigtotal"><span id="carrySymbol">¥</span><span id="carryTotal">0</span></div></div><div class="card"><div class="muted">月別実績</div><div id="carryList" class="list"></div></div></section>
 <section id="settings" class="screen"><h2>設定</h2><div class="card"><label for="currencySelect">使用する通貨</label><select id="currencySelect" onchange="changeCurrency()"><option value="JPY">日本円（JPY・¥）</option><option value="USD">米ドル（USD・$）</option><option value="CAD">カナダドル（CAD・CA$）</option><option value="GBP">英ポンド（GBP・£）</option><option value="EUR">ユーロ（EUR・€）</option></select><p class="small muted">通貨ごとに家計簿データを分けて保存します。通貨を切り替えても、金額の自動換算は行いません。</p></div><div class="card"><label>毎月の起点日</label><select id="startDay"></select><button class="primary" style="margin-top:12px;width:100%" onclick="saveStartDay()">保存</button></div><div class="card"><label>文字サイズ</label><div class="toggle" id="sizeToggle"><button onclick="setSize('small')">小</button><button onclick="setSize('medium')">中</button><button onclick="setSize('large')">大</button></div></div><div class="card">
+
+<div class="card" id="syncCard">
+  <label>iPhone・PC間の同期</label>
+  <p class="small muted">Supabaseにログインすると、家計簿データを端末間で同期できます。</p>
+  <label for="syncEmail">メールアドレス</label>
+  <input id="syncEmail" type="email" autocomplete="username" placeholder="登録したメールアドレス">
+  <label for="syncPassword">パスワード</label>
+  <input id="syncPassword" type="password" autocomplete="current-password" placeholder="Supabaseで設定したパスワード">
+  <button class="primary" style="width:100%;margin-top:12px" onclick="syncLogin()">ログインして同期</button>
+  <button class="secondary" style="width:100%;margin-top:8px" onclick="syncNow()">今すぐ同期</button>
+  <button class="secondary" style="width:100%;margin-top:8px" onclick="syncLogout()">ログアウト</button>
+  <p id="syncStatus" class="small muted" role="status">未ログイン</p>
+</div>
+
 <label>バックアップ・復元</label>
 <p class="small muted">履歴・残高・設定をファイルに保存できます。別の端末へ移すときにも使えます。バックアップファイルは大切に保管してください。</p>
 <button class="secondary" style="width:100%;margin-top:8px" onclick="exportBackup()">バックアップを保存</button>
@@ -63,7 +76,81 @@ label{display:block;font-weight:700;margin:14px 0 7px}input,select{width:100%;pa
 <button onclick="clearKey()">C</button><button onclick="key('0')">0</button><button onclick="key('00')">00</button><button onclick="backspace()">⌫</button>
 </div><button class="primary" style="width:100%;margin-top:12px" onclick="commitAmount()">確定</button></div></div>
 <div id="menu" class="menu" onclick="closeMenu(event)"><div class="drawer" onclick="event.stopPropagation()"><h2>メニュー</h2><button onclick="go('home')">残高</button><button onclick="go('history')">履歴</button><button onclick="go('carry')">繰越金</button><button onclick="go('settings')">設定</button></div></div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
+const SUPABASE_URL = 'https://peqcqjrguqrxwvhmehsd.supabase.co';
+// Supabase Publishable key（ブラウザ用公開キー）
+const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_H6R8LAlAXAylCnYWdo3qOQ_6i7aQPta';
+const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
+let syncUser = null;
+let syncTimer = null;
+let syncBusy = false;
+let syncPending = false;
+function syncStatus(message){const el=document.getElementById('syncStatus');if(el)el.textContent=message;}
+function scheduleSync(){
+  if(!syncUser)return;
+  clearTimeout(syncTimer);
+  syncTimer=setTimeout(()=>syncNow(),1200);
+}
+async function uploadLocalData(){
+  if(!syncUser)throw new Error('ログインしていません');
+  const {error}=await supabaseClient.from('balance_sync').upsert({
+    user_id:syncUser.id, data:JSON.parse(localStorage.getItem(KEY)||'{}'), updated_at:new Date().toISOString()
+  },{onConflict:'user_id'});
+  if(error)throw error;
+}
+async function syncNow(){
+  if(!syncUser){syncStatus('未ログインです。先にログインしてください。');return;}
+  if(syncBusy){syncPending=true;return;}
+  syncBusy=true;syncStatus('同期中…');
+  try{
+    await uploadLocalData();
+    syncStatus('同期済み · '+new Date().toLocaleString('ja-JP'));
+  }catch(e){console.error(e);syncStatus('同期できませんでした。通信とSupabase設定を確認してください。');}
+  finally{syncBusy=false;if(syncPending){syncPending=false;scheduleSync();}}
+}
+async function syncLogin(){
+  const email=document.getElementById('syncEmail').value.trim();
+  const password=document.getElementById('syncPassword').value;
+  if(!email||!password){alert('メールアドレスとパスワードを入力してください。');return;}
+  syncStatus('ログイン中…');
+  try{
+    const {data:authData,error:authError}=await supabaseClient.auth.signInWithPassword({email,password});
+    if(authError)throw authError;
+    syncUser=authData.user;
+    const {data:cloud,error:readError}=await supabaseClient.from('balance_sync').select('data,updated_at').eq('user_id',syncUser.id).maybeSingle();
+    if(readError)throw readError;
+    const localData=JSON.parse(localStorage.getItem(KEY)||'null')||state;
+    if(!cloud){
+      await uploadLocalData();
+      syncStatus('初回データをクラウドに保存しました。');
+    }else{
+      const localText=JSON.stringify(localData);
+      const cloudText=JSON.stringify(cloud.data);
+      if(localText!==cloudText){
+        const useCloud=confirm('クラウドに別のデータがあります。\n\n「OK」：クラウドのデータをこの端末に反映\n「キャンセル」：この端末のデータをクラウドへ保存');
+        if(useCloud){
+          localStorage.setItem(KEY+'.beforeSyncBackup',JSON.stringify(localData));
+          localStorage.setItem(KEY,JSON.stringify(cloud.data));
+          location.reload();
+          syncStatus('クラウドのデータを反映しました。端末の同期前データもバックアップとして保存しました。');
+        }else{
+          const overwrite=confirm('この端末のデータでクラウドを置き換えますか？\n既存のクラウドデータは上書きされます。');
+          if(!overwrite){syncStatus('同期を中止しました。データは変更していません。');return;}
+          await uploadLocalData();
+          syncStatus('この端末のデータをクラウドへ保存しました。');
+        }
+      }else{
+        syncStatus('端末とクラウドのデータは同じです。同期できます。');
+      }
+    }
+    document.getElementById('syncPassword').value='';
+  }catch(e){console.error(e);syncUser=null;syncStatus('ログイン・同期に失敗しました。入力内容とSupabase設定を確認してください。');alert('ログインまたは同期に失敗しました。メールアドレス・パスワード・Supabase設定をご確認ください。');}
+}
+async function syncLogout(){
+  try{await supabaseClient.auth.signOut();syncUser=null;syncStatus('ログアウトしました。端末内のデータはそのままです。');}
+  catch(e){syncStatus('ログアウトできませんでした。');}
+}
 const KEY='simpleBalanceApp.v1';
 let state=JSON.parse(localStorage.getItem(KEY)||'null')||{startDay:null,cycles:{},events:[],size:'medium'};
 // 既存データは日本円の台帳として引き継ぎ、通貨ごとに別々に保存します。
@@ -76,7 +163,7 @@ let input='0', mode='expense', historyMode='daily';
 const CURRENCIES={JPY:{symbol:'¥',locale:'ja-JP'},USD:{symbol:'$',locale:'en-US'},CAD:{symbol:'CA$',locale:'en-CA'},GBP:{symbol:'£',locale:'en-GB'},EUR:{symbol:'€',locale:'de-DE'}};
 const currencySymbol=()=>CURRENCIES[state.currency]?.symbol||'¥';
 const yen=n=>Number(n||0).toLocaleString(CURRENCIES[state.currency]?.locale||'ja-JP',{maximumFractionDigits:0});
-function save(){localStorage.setItem(KEY,JSON.stringify(state))}
+function save(){localStorage.setItem(KEY,JSON.stringify(state));scheduleSync()}
 function changeCurrency(){const next=document.getElementById('currencySelect').value;if(next===state.currency)return;if(!confirm('通貨を「'+next+'」に切り替えます。金額は換算されず、通貨ごとに別々の家計簿として保存されます。切り替えますか？')){document.getElementById('currencySelect').value=state.currency;return;}state.currency=next;if(!state.ledgers[next])state.ledgers[next]={cycles:{},events:[]};save();render();alert('通貨を切り替えました。');}
 function daysInMonth(y,m){return new Date(y,m+1,0).getDate()}
 function cycleStart(d=new Date()){
@@ -168,7 +255,8 @@ async function importBackup(){
 }
 
 function resetAll(){if(confirm('すべてのデータを初期化しますか？')){localStorage.removeItem(KEY);location.reload()}}
-(function init(){const sel=document.getElementById('startDay');for(let i=1;i<=31;i++)sel.innerHTML+=`<option value="${i}">${i}日</option>`;sel.innerHTML+='<option value="99">月末</option>';sel.addEventListener('change',()=>{});if(!state.startDay){const d=new Date().getDate();sel.value=d;state.startDay=d;save()}else sel.value=state.startDay===99?99:state.startDay;setSize(state.size);render()})()
+(function init(){const sel=document.getElementById('startDay');for(let i=1;i<=31;i++)sel.innerHTML+=`<option value="${i}">${i}日</option>`;sel.innerHTML+='<option value="99">月末</option>';sel.addEventListener('change',()=>{});if(!state.startDay){const d=new Date().getDate();sel.value=d;state.startDay=d;save()}else sel.value=state.startDay===99?99:state.startDay;setSize(state.size);render()})();
+(async function restoreSyncSession(){try{const {data}=await supabaseClient.auth.getSession();if(data.session){syncUser=data.session.user;syncStatus('ログイン済み。変更は自動で同期されます。');await syncNow();}}catch(e){syncStatus('未ログイン');}})()
 </script>
 
 <script>
