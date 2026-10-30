@@ -86,63 +86,66 @@ let syncUser = null;
 let syncTimer = null;
 let syncBusy = false;
 let syncPending = false;
-function syncStatus(message){const el=document.getElementById('syncStatus');if(el)el.textContent=message;}
-function scheduleSync(){
-  if(!syncUser)return;
-  clearTimeout(syncTimer);
-  syncTimer=setTimeout(()=>syncNow(),1200);
+
+function syncStatus(message){
+  const el=document.getElementById('syncStatus');
+  if(el)el.textContent=message;
 }
-async function uploadLocalData(){
-  if(!syncUser)throw new Error('ログインしていません');
-  const {error}=await supabaseClient.from('balance_sync').upsert({
-    user_id:syncUser.id, data:JSON.parse(localStorage.getItem(KEY)||'{}'), updated_at:new Date().toISOString()
-  },{onConflict:'user_id'});
-  if(error)throw error;
-}
+
+// 安全確認が終わるまで自動同期は停止
+function scheduleSync(){}
+
 async function syncNow(){
-  if(!syncUser){syncStatus('未ログインです。先にログインしてください。');return;}
-  if(syncBusy){syncPending=true;return;}
-  syncBusy=true;syncStatus('同期中…');
-  try{
-    await uploadLocalData();
-    syncStatus('同期済み · '+new Date().toLocaleString('ja-JP'));
-  }catch(e){console.error(e);syncStatus('同期できませんでした。通信とSupabase設定を確認してください。');}
-  finally{syncBusy=false;if(syncPending){syncPending=false;scheduleSync();}}
+  syncStatus('現在、データの同期は停止中です。');
 }
+
 async function syncLogin(){
   const email=document.getElementById('syncEmail').value.trim();
   const password=document.getElementById('syncPassword').value;
+
   if(!email||!password){
     alert('メールアドレスとパスワードを入力してください。');
     return;
   }
+
   syncStatus('ログイン情報を確認中…');
+
   try{
-    const {data:authData,error:authError}=await supabaseClient.auth.signInWithPassword({email,password});
+    const {data:authData,error:authError}=
+      await supabaseClient.auth.signInWithPassword({email,password});
+
     if(authError)throw authError;
+
     const user=authData.user;
+
     const {data:cloud,error:readError}=await supabaseClient
       .from('balance_sync')
       .select('updated_at')
       .eq('user_id',user.id)
       .maybeSingle();
+
     if(readError)throw readError;
+
     await supabaseClient.auth.signOut();
+    syncUser=null;
     document.getElementById('syncPassword').value='';
+
     if(cloud){
       syncStatus('ログイン確認済み。クラウドにデータがあります。家計簿データは変更していません。');
     }else{
-      syncStatus('ログイン確認済み。クラウドにデータは見つかりませんでした。家計簿データは変更していません。');
+      syncStatus('ログイン確認済み。クラウドは空です。家計簿データは変更していません。');
     }
+
   }catch(e){
     console.error(e);
     try{await supabaseClient.auth.signOut();}catch(ignore){}
     syncUser=null;
     document.getElementById('syncPassword').value='';
-    syncStatus('確認に失敗しました。家計簿データは変更していません。');
-    alert('ログイン確認に失敗しました。メールアドレスやパスワードをご確認ください。');
+    syncStatus('ログイン確認に失敗しました。家計簿データは変更していません。');
+    alert('ログインまたはクラウドの確認に失敗しました。');
   }
 }
+
 async function syncLogout(){
   try{
     await supabaseClient.auth.signOut();
