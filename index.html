@@ -256,7 +256,7 @@ async function importBackup(){
 
 function resetAll(){if(confirm('すべてのデータを初期化しますか？')){localStorage.removeItem(KEY);location.reload()}}
 (function init(){const sel=document.getElementById('startDay');for(let i=1;i<=31;i++)sel.innerHTML+=`<option value="${i}">${i}日</option>`;sel.innerHTML+='<option value="99">月末</option>';sel.addEventListener('change',()=>{});if(!state.startDay){const d=new Date().getDate();sel.value=d;state.startDay=d;save()}else sel.value=state.startDay===99?99:state.startDay;setSize(state.size);render()})();
-(async function restoreSyncSession(){try{const {data}=await supabaseClient.auth.getSession();if(data.session){syncUser=data.session.user;syncStatus('ログイン済み。変更は自動で同期されます。');await syncNow();}}catch(e){syncStatus('未ログイン');}})()
+syncStatus('未ログインです。同期する場合はログインしてください。');
 </script>
 
 <script>
