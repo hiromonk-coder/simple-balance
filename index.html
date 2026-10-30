@@ -52,6 +52,7 @@ label{display:block;font-weight:700;margin:14px 0 7px}input,select{width:100%;pa
   <label for="syncPassword">パスワード</label>
   <input id="syncPassword" type="password" autocomplete="current-password" placeholder="Supabaseで設定したパスワード">
   <button class="primary" style="width:100%;margin-top:12px" onclick="syncLogin()">ログインして同期</button>
+ <button class="secondary" style="width:100%;margin-top:8px" onclick="syncFirstUpload()">この端末のデータを初回保存</button>
   <button class="secondary" style="width:100%;margin-top:8px" onclick="syncNow()">今すぐ同期</button>
   <button class="secondary" style="width:100%;margin-top:8px" onclick="syncLogout()">ログアウト</button>
   <p id="syncStatus" class="small muted" role="status">未ログイン</p>
@@ -146,7 +147,112 @@ async function syncLogin(){
   }
 }
 
-async function syncLogout(){
+function stableStringify(value){
+  if(Array.isArray(value)){
+    return '['+value.map(stableStringify).join(',')+']';
+  }
+  if(value&&typeof value==='object'){
+    return '{'+Object.keys(value).sort().map(
+      key=>JSON.stringify(key)+':'+stableStringify(value[key])
+    ).join(',')+'}';
+  }
+  return JSON.stringify(value);
+}
+
+async function syncFirstUpload(){
+  const email=document.getElementById('syncEmail').value.trim();
+  const password=document.getElementById('syncPassword').value;
+
+  if(!email||!password){
+    alert('メールアドレスとパスワードを入力してください。');
+    return;
+  }
+
+  if(!confirm('この端末の家計簿データをクラウドへ初回保存します。端末内のデータは変更しません。続けますか？')){
+    return;
+  }
+
+  let signedIn=false;
+
+  try{
+    syncStatus('端末内のデータを確認中…');
+
+    const localData=JSON.parse(JSON.stringify(state));
+
+    if(!localData.ledgers||typeof localData.ledgers!=='object'){
+      throw new Error('家計簿データの形式を確認できません。');
+    }
+
+    for(const ledger of Object.values(localData.ledgers)){
+      if(!ledger||typeof ledger!=='object'||
+         !Array.isArray(ledger.events)||
+         !ledger.cycles||typeof ledger.cycles!=='object'){
+        throw new Error('家計簿データの形式が正しくありません。');
+      }
+    }
+
+    const {data:authData,error:authError}=
+      await supabaseClient.auth.signInWithPassword({email,password});
+
+    if(authError)throw authError;
+    signedIn=true;
+
+    const user=authData.user;
+
+    const {data:existing,error:readError}=await supabaseClient
+      .from('balance_sync')
+      .select('user_id')
+      .eq('user_id',user.id)
+      .maybeSingle();
+
+    if(readError)throw readError;
+
+    if(existing){
+      throw new Error('クラウドに既存データがあります。上書きせず中止しました。');
+    }
+
+    const {error:insertError}=await supabaseClient
+      .from('balance_sync')
+      .insert({
+        user_id:user.id,
+        data:localData,
+        updated_at:new Date().toISOString()
+      });
+
+    if(insertError)throw insertError;
+
+    const {data:check,error:checkError}=await supabaseClient
+      .from('balance_sync')
+      .select('data')
+      .eq('user_id',user.id)
+      .single();
+
+    if(checkError)throw checkError;
+
+    if(stableStringify(check.data)!==stableStringify(localData)){
+      throw new Error('保存後の照合に失敗しました。');
+    }
+
+    syncStatus('初回保存と照合が完了しました。端末内のデータは変更していません。');
+    alert('クラウドへの初回保存と照合が完了しました。');
+
+  }catch(e){
+    console.error(e);
+    syncStatus('初回保存を完了できませんでした。端末内のデータは変更していません。');
+    alert('初回保存を完了できませんでした。クラウドの状態を確認してください。');
+  }finally{
+    if(signedIn){
+      try{
+        await supabaseClient.auth.signOut();
+      }catch(e){
+        console.error(e);
+      }
+    }
+    syncUser=null;
+    document.getElementById('syncPassword').value='';
+  }
+}
+  async function syncLogout(){
   try{
     await supabaseClient.auth.signOut();
     syncUser=null;
@@ -154,7 +260,8 @@ async function syncLogout(){
   }catch(e){
     syncStatus('ログアウトできませんでした。');
   }
-}const KEY='simpleBalanceApp.v1';
+}
+  const KEY='simpleBalanceApp.v1';
 let state=JSON.parse(localStorage.getItem(KEY)||'null')||{startDay:null,cycles:{},events:[],size:'medium'};
 // 既存データは日本円の台帳として引き継ぎ、通貨ごとに別々に保存します。
 if(!state.ledgers){state.ledgers={JPY:{cycles:state.cycles||{},events:state.events||[]}};delete state.cycles;delete state.events;}
