@@ -236,10 +236,12 @@ async function syncFirstUpload(){
     syncStatus('初回保存と照合が完了しました。端末内のデータは変更していません。');
     alert('クラウドへの初回保存と照合が完了しました。');
 
-  }catch(e){
+   }catch(e){
     console.error(e);
-    syncStatus('初回保存を完了できませんでした。端末内のデータは変更していません。');
-    alert('初回保存を完了できませんでした。クラウドの状態を確認してください。');
+    const detail = e?.message || '詳細不明のエラー';
+    const code = e?.code ? '（コード: '+e.code+'）' : '';
+    syncStatus('初回保存エラー: '+detail+code);
+    alert('初回保存エラー:\n'+detail+code);
   }finally{
     if(signedIn){
       try{
