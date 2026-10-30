@@ -112,46 +112,46 @@ async function syncNow(){
 async function syncLogin(){
   const email=document.getElementById('syncEmail').value.trim();
   const password=document.getElementById('syncPassword').value;
-  if(!email||!password){alert('メールアドレスとパスワードを入力してください。');return;}
-  syncStatus('ログイン中…');
+  if(!email||!password){
+    alert('メールアドレスとパスワードを入力してください。');
+    return;
+  }
+  syncStatus('ログイン情報を確認中…');
   try{
     const {data:authData,error:authError}=await supabaseClient.auth.signInWithPassword({email,password});
     if(authError)throw authError;
-    syncUser=authData.user;
-    const {data:cloud,error:readError}=await supabaseClient.from('balance_sync').select('data,updated_at').eq('user_id',syncUser.id).maybeSingle();
+    const user=authData.user;
+    const {data:cloud,error:readError}=await supabaseClient
+      .from('balance_sync')
+      .select('updated_at')
+      .eq('user_id',user.id)
+      .maybeSingle();
     if(readError)throw readError;
-    const localData=JSON.parse(localStorage.getItem(KEY)||'null')||state;
-    if(!cloud){
-      await uploadLocalData();
-      syncStatus('初回データをクラウドに保存しました。');
-    }else{
-      const localText=JSON.stringify(localData);
-      const cloudText=JSON.stringify(cloud.data);
-      if(localText!==cloudText){
-        const useCloud=confirm('クラウドに別のデータがあります。\n\n「OK」：クラウドのデータをこの端末に反映\n「キャンセル」：この端末のデータをクラウドへ保存');
-        if(useCloud){
-          localStorage.setItem(KEY+'.beforeSyncBackup',JSON.stringify(localData));
-          localStorage.setItem(KEY,JSON.stringify(cloud.data));
-          location.reload();
-          syncStatus('クラウドのデータを反映しました。端末の同期前データもバックアップとして保存しました。');
-        }else{
-          const overwrite=confirm('この端末のデータでクラウドを置き換えますか？\n既存のクラウドデータは上書きされます。');
-          if(!overwrite){syncStatus('同期を中止しました。データは変更していません。');return;}
-          await uploadLocalData();
-          syncStatus('この端末のデータをクラウドへ保存しました。');
-        }
-      }else{
-        syncStatus('端末とクラウドのデータは同じです。同期できます。');
-      }
-    }
+    await supabaseClient.auth.signOut();
     document.getElementById('syncPassword').value='';
-  }catch(e){console.error(e);syncUser=null;syncStatus('ログイン・同期に失敗しました。入力内容とSupabase設定を確認してください。');alert('ログインまたは同期に失敗しました。メールアドレス・パスワード・Supabase設定をご確認ください。');}
+    if(cloud){
+      syncStatus('ログイン確認済み。クラウドにデータがあります。家計簿データは変更していません。');
+    }else{
+      syncStatus('ログイン確認済み。クラウドにデータは見つかりませんでした。家計簿データは変更していません。');
+    }
+  }catch(e){
+    console.error(e);
+    try{await supabaseClient.auth.signOut();}catch(ignore){}
+    syncUser=null;
+    document.getElementById('syncPassword').value='';
+    syncStatus('確認に失敗しました。家計簿データは変更していません。');
+    alert('ログイン確認に失敗しました。メールアドレスやパスワードをご確認ください。');
+  }
 }
 async function syncLogout(){
-  try{await supabaseClient.auth.signOut();syncUser=null;syncStatus('ログアウトしました。端末内のデータはそのままです。');}
-  catch(e){syncStatus('ログアウトできませんでした。');}
-}
-const KEY='simpleBalanceApp.v1';
+  try{
+    await supabaseClient.auth.signOut();
+    syncUser=null;
+    syncStatus('ログアウトしました。端末内のデータはそのままです。');
+  }catch(e){
+    syncStatus('ログアウトできませんでした。');
+  }
+}const KEY='simpleBalanceApp.v1';
 let state=JSON.parse(localStorage.getItem(KEY)||'null')||{startDay:null,cycles:{},events:[],size:'medium'};
 // 既存データは日本円の台帳として引き継ぎ、通貨ごとに別々に保存します。
 if(!state.ledgers){state.ledgers={JPY:{cycles:state.cycles||{},events:state.events||[]}};delete state.cycles;delete state.events;}
