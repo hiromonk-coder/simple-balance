@@ -52,6 +52,7 @@ label{display:block;font-weight:700;margin:14px 0 7px}input,select{width:100%;pa
   <label for="syncPassword">パスワード</label>
   <input id="syncPassword" type="password" autocomplete="current-password" placeholder="Supabaseで設定したパスワード">
   <button class="primary" style="width:100%;margin-top:12px" onclick="syncLogin()">ログインして同期</button>
+ <button class="secondary" style="width:100%;margin-top:8px" onclick="syncCheckCloud()">クラウドデータを読み取り比較（変更なし）</button> 
  <button class="secondary" style="width:100%;margin-top:8px" onclick="syncFirstUpload()">この端末のデータを初回保存</button>
   <button class="secondary" style="width:100%;margin-top:8px" onclick="syncNow()">今すぐ同期</button>
   <button class="secondary" style="width:100%;margin-top:8px" onclick="syncLogout()">ログアウト</button>
@@ -158,7 +159,88 @@ function stableStringify(value){
   }
   return JSON.stringify(value);
 }
+async function syncCheckCloud(){
+  const email=document.getElementById('syncEmail').value.trim();
+  const password=document.getElementById('syncPassword').value;
 
+  if(!email||!password){
+    alert('メールアドレスとパスワードを入力してください。');
+    return;
+  }
+
+  let signedIn=false;
+
+  try{
+    syncStatus('クラウドデータを読み取り中…');
+
+    const {data:authData,error:authError}=
+      await supabaseClient.auth.signInWithPassword({email,password});
+
+    if(authError)throw authError;
+    signedIn=true;
+
+    const user=authData.user;
+
+    const {data:cloud,error:readError}=await supabaseClient
+      .from('balance_sync')
+      .select('data,updated_at')
+      .eq('user_id',user.id)
+      .maybeSingle();
+
+    if(readError)throw readError;
+
+    if(!cloud){
+      syncStatus('クラウドにデータがありません。PC内のデータは変更していません。');
+      alert('クラウドにデータがありません。');
+      return;
+    }
+
+    const cloudData=cloud.data;
+
+    if(!cloudData||typeof cloudData!=='object'||
+       !cloudData.ledgers||typeof cloudData.ledgers!=='object'){
+      throw new Error('クラウドデータの形式を確認できません。');
+    }
+
+    for(const ledger of Object.values(cloudData.ledgers)){
+      if(!ledger||typeof ledger!=='object'||
+         !Array.isArray(ledger.events)||
+         !ledger.cycles||typeof ledger.cycles!=='object'){
+        throw new Error('クラウドデータの内容が正しくありません。');
+      }
+    }
+
+    const isSame=
+      stableStringify(cloudData)===stableStringify(state);
+
+    const updatedAt=cloud.updated_at
+      ?new Date(cloud.updated_at).toLocaleString('ja-JP')
+      :'不明';
+
+    if(isSame){
+      syncStatus('確認完了：PC内とクラウドのデータは一致しています。更新日時：'+updatedAt+'。データの変更はありません。');
+      alert('確認完了：PC内とクラウドのデータは一致しています。\\n更新日時：'+updatedAt+'\\nPC内のデータは変更していません。');
+    }else{
+      syncStatus('確認完了：PC内とクラウドのデータは異なります。PC内のデータは変更していません。更新日時：'+updatedAt);
+      alert('PC内とクラウドのデータは異なります。\\n更新日時：'+updatedAt+'\\nPC内のデータは変更していません。');
+    }
+
+  }catch(e){
+    console.error(e);
+    syncStatus('クラウド確認エラー：'+(e?.message||'詳細不明'));
+    alert('クラウドの確認に失敗しました。PC内のデータは変更していません。');
+  }finally{
+    if(signedIn){
+      try{
+        await supabaseClient.auth.signOut();
+      }catch(e){
+        console.error(e);
+      }
+    }
+    syncUser=null;
+    document.getElementById('syncPassword').value='';
+  }
+}
 async function syncFirstUpload(){
   const email=document.getElementById('syncEmail').value.trim();
   const password=document.getElementById('syncPassword').value;
