@@ -57,6 +57,14 @@ label{display:block;font-weight:700;margin:14px 0 7px}input,select{width:100%;pa
   <button class="secondary" style="width:100%;margin-top:8px" onclick="syncNow()">今すぐ同期</button>
   <button class="secondary" style="width:100%;margin-top:8px" onclick="syncLogout()">ログアウト</button>
   <p id="syncStatus" class="small muted" role="status">未ログイン</p>
+  <div id="passwordRecoveryBox" style="display:none;margin-top:14px">
+  <label for="newSyncPassword">新しいパスワード</label>
+  <input id="newSyncPassword" type="password" autocomplete="new-password" placeholder="新しいパスワード">
+  <label for="confirmSyncPassword">新しいパスワード（確認）</label>
+  <input id="confirmSyncPassword" type="password" autocomplete="new-password" placeholder="もう一度入力">
+  <button class="primary" style="width:100%;margin-top:12px" onclick="completePasswordReset()">新しいパスワードを保存</button>
+  <p class="small muted">パスワードは8文字以上を推奨します。</p>
+</div>
 </div>
 
 <label>バックアップ・復元</label>
@@ -85,6 +93,47 @@ const SUPABASE_URL = 'https://peqcqjrguqrxwvhmehsd.supabase.co';
 const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_H6R8LAlAXAylCnYWdo3qOQ_6i7aQPta';
 const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 let syncUser = null;
+supabaseClient.auth.onAuthStateChange((event, session) => {
+  if (event === 'PASSWORD_RECOVERY') {
+    const box = document.getElementById('passwordRecoveryBox');
+    if (box) box.style.display = 'block';
+    syncStatus('新しいパスワードを入力してください。');
+    go('settings');
+  }
+});  
+async function completePasswordReset() {
+  const password = document.getElementById('newSyncPassword').value;
+  const confirmPassword = document.getElementById('confirmSyncPassword').value;
+
+  if (password.length < 8) {
+    alert('新しいパスワードは8文字以上にしてください。');
+    return;
+  }
+
+  if (password !== confirmPassword) {
+    alert('確認用パスワードが一致しません。');
+    return;
+  }
+
+  syncStatus('新しいパスワードを保存中…');
+
+  const { error } = await supabaseClient.auth.updateUser({ password });
+
+  if (error) {
+    console.error(error);
+    syncStatus('パスワードの更新に失敗しました。');
+    alert('パスワードを更新できませんでした。もう一度お試しください。');
+    return;
+  }
+
+  document.getElementById('newSyncPassword').value = '';
+  document.getElementById('confirmSyncPassword').value = '';
+  document.getElementById('passwordRecoveryBox').style.display = 'none';
+
+  await supabaseClient.auth.signOut();
+  syncStatus('パスワードを更新しました。新しいパスワードでログインしてください。');
+  alert('パスワードを更新しました。');
+}  
 let syncTimer = null;
 let syncBusy = false;
 let syncPending = false;
