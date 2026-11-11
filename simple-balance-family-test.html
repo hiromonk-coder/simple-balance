@@ -165,22 +165,23 @@ async function fetchCloudRow(){
   return data;
 }
 async function initializeCloudSync(hadLocal){
-  if(!syncUser)return;
-  cloudStatus('クラウドのデータを確認しています…');
   try{
     const remote=await fetchCloudRow();
+
     if(!remote){
       syncRevision=null;
-      if(hadLocal){
-        syncReady=true;
-        await pushLocalToCloud();
-      }else{
-        syncReady=true;
-        cloudStatus('クラウドデータはまだありません。入力内容は自動保存されます。');
-      }
+      syncReady=false;
+      syncConflict=false;
+      cloudStatus(
+        hadLocal
+          ? 'クラウドにデータはありません。端末内のデータは保持されています。内容を確認してから「この端末のデータをクラウドへ保存」を選んでください。'
+          : 'クラウドデータはまだありません。端末内のデータを確認し、必要な場合のみ保存してください。'
+      );
       return;
     }
+
     const localRaw=localStorage.getItem(KEY);
+
     if(!hadLocal || !localRaw){
       state=normalizeFamilyState(remote.payload);
       attachLedgerAliases();
@@ -192,36 +193,33 @@ async function initializeCloudSync(hadLocal){
       writeSyncMeta();
       initApp();
       syncReady=true;
+      syncConflict=false;
       cloudStatus('クラウドのデータをこの端末に復元しました。');
       return;
     }
+
     const localDirty=localSaveStamp>syncedSaveStamp;
+
     if(syncRevision===Number(remote.revision) && syncRevision!==null){
-      syncReady=true;
-      if(localDirty)await pushLocalToCloud();
-      else cloudStatus('同期済み · '+formatCloudTime(remote.updated_at));
-      return;
-    }
-    if(syncRevision===null){
-      const useLocal=confirm('この端末にもデータがあり、クラウドにもデータがあります。\n\n「OK」：この端末のデータをクラウドへ保存（クラウド側を更新）\n「キャンセル」：クラウドのデータをこの端末へ復元');
-      if(useLocal){
-        syncRevision=Number(remote.revision);
-        syncReady=true;
-        await pushLocalToCloud();
+      if(localDirty){
+        syncReady=false;
+        syncConflict=true;
+        cloudStatus('この端末に未同期の変更があります。内容を確認してから「この端末のデータをクラウドへ保存」を選んでください。');
       }else{
-        const useCloud=confirm('クラウドのデータでこの端末のデータを置き換えます。よろしいですか？\nキャンセルすると、この端末のデータを保持して同期を保留します。');
-        if(useCloud)await applyRemote(remote);
-        else{syncReady=false;syncConflict=true;cloudStatus('初回移行は保留中です。上の復元／保存ボタンから選択してください。');}
+        syncReady=true;
+        syncConflict=false;
+        cloudStatus('同期済み · '+formatCloudTime(remote.updated_at));
       }
       return;
     }
-    syncReady=false;syncConflict=true;
-    cloudStatus('別の端末で更新されています。設定画面で「クラウドから復元」または「この端末のデータをクラウドへ保存」を選んでください。');
-    const restore=confirm('クラウド側がこの端末で確認済みの版より新しくなっています。\n\n「OK」：クラウドのデータをこの端末へ復元\n「キャンセル」：後で設定画面から選択');
-    if(restore)await applyRemote(remote);
+
+    syncReady=false;
+    syncConflict=true;
+    cloudStatus('端末内とクラウドのデータを自動で上書きしないよう、同期を停止しました。内容を確認してから復元または保存を選んでください。');
+
   }catch(e){
     syncReady=false;
-    cloudStatus('クラウド確認に失敗しました。端末内のデータは保持されています。通信後に「今すぐ同期」を押してください。');
+    cloudStatus('クラウド確認に失敗しました。端末内のデータは保持されています。');
     console.error('cloud init',e);
   }
 }
@@ -316,14 +314,44 @@ async function restoreCloudToDevice(){
 }
 async function uploadDeviceToCloud(){
   if(!syncUser)return;
-  if(!confirm('この端末のデータをクラウドに保存します。クラウド側のデータを更新する場合があります。続けますか？'))return;
   try{
     const remote=await fetchCloudRow();
+
+    if(remote && syncRevision!==null &&
+       Number(remote.revision)!==syncRevision){
+      syncReady=false;
+      syncConflict=true;
+      cloudStatus(
+        'クラウド側のデータが、この端末で確認した版から更新されています。上書きせず停止しました。先に復元するか、内容を確認してください。'
+      );
+      alert('クラウド側のデータが更新されています。安全のため保存を中止しました。');
+      return;
+    }
+
+    if(remote && syncRevision===null){
+      syncReady=false;
+      syncConflict=true;
+      cloudStatus('クラウドデータの確認が必要です。先にクラウドから復元してください。');
+      alert('クラウドデータの版をまだ確認できていません。上書きせず停止しました。');
+      return;
+    }
+
+    const message=remote
+      ? 'クラウドの現在の版（revision '+remote.revision+'）を確認しました。この端末のデータで更新します。続けますか？'
+      : 'クラウドにデータはありません。この端末のデータを新しく保存します。続けますか？';
+
+    if(!confirm(message))return;
+
     syncRevision=remote?Number(remote.revision):null;
-    syncReady=true;syncConflict=false;
+    syncReady=true;
+    syncConflict=false;
     localSaveStamp=Date.now();
     await pushLocalToCloud();
-  }catch(e){cloudStatus('クラウドの確認に失敗しました。端末内のデータは保持されています。');console.error(e);}
+  }catch(e){
+    cloudStatus('クラウドの確認に失敗しました。端末内のデータは保持されています。');
+    console.error(e);
+  }
+
 }
 
 async function familyLogin(){
@@ -417,7 +445,14 @@ function renderHistory(){const el=document.getElementById('historyList');el.inne
 function setHistory(m){historyMode=m;document.getElementById('dailyBtn').classList.toggle('on',m==='daily');document.getElementById('monthlyBtn').classList.toggle('on',m==='monthly');renderHistory()}
 function renderCarry(){const entries=Object.entries(state.cycles).map(([k,c])=>{const out=state.events.filter(e=>e.cycle===k).reduce((a,e)=>a+(e.type==='expense'?e.amount:-e.amount),0);return [k,(c.income||0)-Math.max(0,out)]}).filter(x=>x[1]>0);document.getElementById('carryTotal').textContent=yen(entries.reduce((a,x)=>a+x[1],0));document.getElementById('carryList').innerHTML=entries.sort().reverse().map(x=>`<div class="item row"><span>${x[0].slice(0,7).replace('-','年')}月期</span><b>${currencySymbol()}${yen(x[1])}</b></div>`).join('')||'<div class="empty">繰越実績はありません</div>'}
 function saveStartDay(){state.startDay=Number(document.getElementById('startDay').value);save();render();alert('設定を保存しました。')}
-function setSize(s){state.size=s;document.documentElement.style.fontSize=s==='large'?'19px':s==='small'?'14px':'16px';save()}
+
+function setSize(s){
+  state.size=s;
+  document.documentElement.style.fontSize=
+    s==='large'?'19px':s==='small'?'14px':'16px';
+}
+
+
 
 function exportBackup(){
   try{
@@ -438,16 +473,40 @@ function exportBackup(){
 
 
 
-function initApp(){const sel=document.getElementById('startDay');if(!sel.options.length){for(let i=1;i<=31;i++)sel.innerHTML+=`<option value="${i}">${i}日</option>`;sel.innerHTML+='<option value="99">月末</option>';}if(!state.startDay){const d=new Date().getDate();sel.value=d;state.startDay=d;save()}else sel.value=state.startDay===99?99:state.startDay;setSize(state.size);render();}
-window.addEventListener('online',()=>{if(syncUser&&syncReady&&!syncConflict)syncNow();});
-(async function startFamilyApp(){
-  supabaseClient.auth.onAuthStateChange((event,session)=>{
-    if(session && !appInitialized){familyLoadUser(session.user);}
-    if(!session && appInitialized){syncUser=null;appInitialized=false;KEY=null;syncReady=false;syncConflict=false;syncRevision=null;if(syncTimer)clearTimeout(syncTimer);document.body.classList.remove('family-authenticated');}
-  });
+function initApp(){
+  const sel=document.getElementById('startDay');
+
+  if(!sel.options.length){
+    for(let i=1;i<=31;i++){
+      sel.innerHTML+=`<option value="${i}">${i}日</option>`;
+    }
+    sel.innerHTML+='<option value="99">月末</option>';
+  }
+
+  if(!state.startDay){
+    const d=new Date().getDate();
+    sel.value=d;
+    state.startDay=d;
+  }else{
+    sel.value=state.startDay===99?99:state.startDay;
+  }
+
+  setSize(state.size);
+  render();
+}
+ (async()=>{
   const {data,error}=await supabaseClient.auth.getSession();
-  if(!error && data.session){familyLoadUser(data.session.user);}
-  else if(!appInitialized){syncStatus('メールアドレスでログインするか、新規登録してください。');}
+
+  if(error){
+    syncStatus('ログイン状態を確認できませんでした。ログインしてください。');
+    return;
+  }
+
+  if(data.session && data.session.user){
+    await familyLoadUser(data.session.user);
+  }else if(!appInitialized){
+    syncStatus('メールアドレスでログインするか、新規登録してください。');
+  }
 })();
 </script>
 
