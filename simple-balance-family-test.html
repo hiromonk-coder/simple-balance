@@ -63,13 +63,16 @@ body.family-authenticated #familyGate{display:none}</style>
 <section id="settings" class="screen"><h2>設定</h2><div class="card"><label for="currencySelect">使用する通貨</label><select id="currencySelect" onchange="changeCurrency()"><option value="JPY">日本円（JPY・¥）</option><option value="USD">米ドル（USD・$）</option><option value="CAD">カナダドル（CAD・CA$）</option><option value="GBP">英ポンド（GBP・£）</option><option value="EUR">ユーロ（EUR・€）</option></select><p class="small muted">通貨ごとに家計簿データを分けて保存します。通貨を切り替えても、金額の自動換算は行いません。</p></div><div class="card"><label>毎月の起点日</label><select id="startDay"></select><button class="primary" style="margin-top:12px;width:100%" onclick="saveStartDay()">保存</button></div><div class="card"><label>文字サイズ</label><div class="toggle" id="sizeToggle"><button onclick="setSize('small')">小</button><button onclick="setSize('medium')">中</button><button onclick="setSize('large')">大</button></div></div><div class="card">
 
 <div class="card" id="syncCard">
-  <label>家族アカウント</label>
-  <p class="small muted">ログイン中のアカウント専用の端末内データを使用しています。クラウド同期・復元はまだ有効にしていません。</p>
+  <label>家族アカウント・クラウド同期</label>
   <p id="familyAccountStatus" class="small muted">ログイン中</p>
+  <p id="cloudSyncStatus" class="small muted" role="status">クラウドの状態を確認しています…</p>
+  <button class="secondary" style="width:100%;margin-top:8px" onclick="syncNow()">今すぐ同期</button>
+  <button class="secondary" style="width:100%;margin-top:8px" onclick="restoreCloudToDevice()">クラウドからこの端末へ復元</button>
+  <button class="secondary" style="width:100%;margin-top:8px" onclick="uploadDeviceToCloud()">この端末のデータをクラウドへ保存</button>
   <button class="secondary" style="width:100%;margin-top:8px" onclick="familyLogout()">ログアウト</button>
 </div>
 
-<label>バックアップ</label><p class="small muted">このアカウント専用のバックアップを書き出せます。</p><button class="secondary" style="width:100%;margin-top:8px" onclick="exportBackup()">バックアップを保存</button></div><div class="card small muted">データはこの端末のブラウザ内（localStorage）に保存され、通常はネットワーク通信を行いません。バックアップファイルはご自身で保管してください。</div>
+<label>バックアップ</label><p class="small muted">このアカウント専用のバックアップを書き出せます。</p><button class="secondary" style="width:100%;margin-top:8px" onclick="exportBackup()">バックアップを保存</button></div><div class="card small muted">入力内容はまずこの端末に保存され、通信できるときにログイン中のアカウント専用クラウドへ同期されます。新しい端末では同じメールアドレスでログインして復元できます。バックアップファイルも念のため保管してください。</div>
 </section>
 </main>
 </div></div>
@@ -89,28 +92,240 @@ const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_PUBLI
 let syncUser = null;
 let appInitialized = false;
 let KEY = null;
+let syncReady = false;
+let syncBusy = false;
+let syncTimer = null;
+let syncRevision = null;
+let syncConflict = false;
+let localSaveStamp = 0;
+let syncedSaveStamp = 0;
+let cloudUpdatedAt = null;
+function metaKey(){ return KEY ? KEY + '.cloudmeta' : null; }
+function readSyncMeta(){
+  try { const m=JSON.parse(localStorage.getItem(metaKey())||'null'); return m&&typeof m==='object'?m:{}; }
+  catch(e){ return {}; }
+}
+function writeSyncMeta(){
+  if(!KEY)return;
+  localStorage.setItem(metaKey(),JSON.stringify({
+    revision:syncRevision, localSaveStamp, syncedSaveStamp, cloudUpdatedAt
+  }));
+}
+function cloudStatus(message){
+  const el=document.getElementById('cloudSyncStatus');
+  if(el)el.textContent=message;
+}
+function normalizeFamilyState(saved){
+  let v=saved || {startDay:null,cycles:{},events:[],size:'medium'};
+  if(!v.ledgers){v.ledgers={JPY:{cycles:v.cycles||{},events:v.events||[]}};delete v.cycles;delete v.events;}
+  v.currency=v.currency||'JPY';
+  if(!v.ledgers[v.currency])v.ledgers[v.currency]={cycles:{},events:[]};
+  return v;
+}
+function attachLedgerAliases(){
+  Object.defineProperty(state,'cycles',{configurable:true,enumerable:false,get(){return state.ledgers[state.currency].cycles},set(v){state.ledgers[state.currency].cycles=v}});
+  Object.defineProperty(state,'events',{configurable:true,enumerable:false,get(){return state.ledgers[state.currency].events},set(v){state.ledgers[state.currency].events=v}});
+}
+function hasMeaningfulLocalData(v){
+  if(!v)return false;
+  const ledgers=v.ledgers||{};
+  return Object.values(ledgers).some(x=>Object.keys(x.cycles||{}).length>0 || (x.events||[]).length>0) || !!v.startDay;
+}
+
 function syncStatus(message){
   const el=document.getElementById('syncStatus');
   if(el) el.textContent=message;
 }
 function familyStorageKey(userId){ return 'simpleBalanceApp.family.v1:' + userId; }
-function familyLoadUser(user){
+async function familyLoadUser(user){
   if(!user || appInitialized) return;
   syncUser=user;
   KEY=familyStorageKey(user.id);
-  const saved=JSON.parse(localStorage.getItem(KEY)||'null');
-  state=saved || {startDay:null,cycles:{},events:[],size:'medium'};
-  if(!state.ledgers){state.ledgers={JPY:{cycles:state.cycles||{},events:state.events||[]}};delete state.cycles;delete state.events;}
-  state.currency=state.currency||'JPY';
-  if(!state.ledgers[state.currency])state.ledgers[state.currency]={cycles:{},events:[]};
-  Object.defineProperty(state,'cycles',{configurable:true,enumerable:false,get(){return state.ledgers[state.currency].cycles},set(v){state.ledgers[state.currency].cycles=v}});
-  Object.defineProperty(state,'events',{configurable:true,enumerable:false,get(){return state.ledgers[state.currency].events},set(v){state.ledgers[state.currency].events=v}});
+  let saved=null;
+  try{saved=JSON.parse(localStorage.getItem(KEY)||'null');}catch(e){saved=null;}
+  state=normalizeFamilyState(saved);
+  const meta=readSyncMeta();
+  syncRevision=Number.isInteger(meta.revision)?meta.revision:null;
+  localSaveStamp=Number(meta.localSaveStamp)||0;
+  syncedSaveStamp=Number(meta.syncedSaveStamp)||0;
+  cloudUpdatedAt=meta.cloudUpdatedAt||null;
+  attachLedgerAliases();
   document.body.classList.add('family-authenticated');
   const status=document.getElementById('familyAccountStatus');
   if(status) status.textContent='ログイン中：'+(user.email||'登録済みアカウント');
   appInitialized=true;
+  syncReady=false;
   initApp();
+  await initializeCloudSync(!!saved);
 }
+async function fetchCloudRow(){
+  const {data,error}=await supabaseClient.from('family_user_data')
+    .select('payload,revision,updated_at').eq('user_id',syncUser.id).maybeSingle();
+  if(error)throw error;
+  return data;
+}
+async function initializeCloudSync(hadLocal){
+  if(!syncUser)return;
+  cloudStatus('クラウドのデータを確認しています…');
+  try{
+    const remote=await fetchCloudRow();
+    if(!remote){
+      syncRevision=null;
+      if(hadLocal){
+        syncReady=true;
+        await pushLocalToCloud();
+      }else{
+        syncReady=true;
+        cloudStatus('クラウドデータはまだありません。入力内容は自動保存されます。');
+      }
+      return;
+    }
+    const localRaw=localStorage.getItem(KEY);
+    if(!hadLocal || !localRaw){
+      state=normalizeFamilyState(remote.payload);
+      attachLedgerAliases();
+      localSaveStamp=Date.now();
+      syncedSaveStamp=localSaveStamp;
+      syncRevision=Number(remote.revision);
+      cloudUpdatedAt=remote.updated_at;
+      localStorage.setItem(KEY,JSON.stringify(state));
+      writeSyncMeta();
+      initApp();
+      syncReady=true;
+      cloudStatus('クラウドのデータをこの端末に復元しました。');
+      return;
+    }
+    const localDirty=localSaveStamp>syncedSaveStamp;
+    if(syncRevision===Number(remote.revision) && syncRevision!==null){
+      syncReady=true;
+      if(localDirty)await pushLocalToCloud();
+      else cloudStatus('同期済み · '+formatCloudTime(remote.updated_at));
+      return;
+    }
+    if(syncRevision===null){
+      const useLocal=confirm('この端末にもデータがあり、クラウドにもデータがあります。\n\n「OK」：この端末のデータをクラウドへ保存（クラウド側を更新）\n「キャンセル」：クラウドのデータをこの端末へ復元');
+      if(useLocal){
+        syncRevision=Number(remote.revision);
+        syncReady=true;
+        await pushLocalToCloud();
+      }else{
+        const useCloud=confirm('クラウドのデータでこの端末のデータを置き換えます。よろしいですか？\nキャンセルすると、この端末のデータを保持して同期を保留します。');
+        if(useCloud)await applyRemote(remote);
+        else{syncReady=false;syncConflict=true;cloudStatus('初回移行は保留中です。上の復元／保存ボタンから選択してください。');}
+      }
+      return;
+    }
+    syncReady=false;syncConflict=true;
+    cloudStatus('別の端末で更新されています。設定画面で「クラウドから復元」または「この端末のデータをクラウドへ保存」を選んでください。');
+    const restore=confirm('クラウド側がこの端末で確認済みの版より新しくなっています。\n\n「OK」：クラウドのデータをこの端末へ復元\n「キャンセル」：後で設定画面から選択');
+    if(restore)await applyRemote(remote);
+  }catch(e){
+    syncReady=false;
+    cloudStatus('クラウド確認に失敗しました。端末内のデータは保持されています。通信後に「今すぐ同期」を押してください。');
+    console.error('cloud init',e);
+  }
+}
+function formatCloudTime(value){
+  if(!value)return '時刻不明';
+  const d=new Date(value);
+  return Number.isNaN(d.getTime())?'時刻不明':d.toLocaleString('ja-JP');
+}
+async function applyRemote(remote){
+  if(!remote)return;
+  state=normalizeFamilyState(remote.payload);
+  attachLedgerAliases();
+  localSaveStamp=Date.now();
+  syncedSaveStamp=localSaveStamp;
+  syncRevision=Number(remote.revision);
+  cloudUpdatedAt=remote.updated_at;
+  localStorage.setItem(KEY,JSON.stringify(state));
+  writeSyncMeta();
+  syncConflict=false;syncReady=true;
+  initApp();
+  cloudStatus('クラウドから復元しました · '+formatCloudTime(remote.updated_at));
+}
+async function pushLocalToCloud(){
+  if(!syncUser||!KEY)return;
+  const snapshot=JSON.parse(JSON.stringify(state));
+  const stamp=localSaveStamp||Date.now();
+  cloudStatus('クラウドへ保存しています…');
+  const {data,error}=await supabaseClient.rpc('save_family_user_data',{
+    p_payload:snapshot,p_expected_revision:syncRevision
+  });
+  if(error){
+    cloudStatus('クラウド保存に失敗しました。端末内のデータは保持されています。');
+    console.error('cloud save',error);return false;
+  }
+  const result=Array.isArray(data)?data[0]:data;
+  if(!result||!result.ok){
+    syncReady=false;syncConflict=true;
+    cloudStatus('別の端末で先に更新されました。データは上書きしていません。設定画面から復元または保存を選んでください。');
+    return false;
+  }
+  syncRevision=Number(result.revision);
+  cloudUpdatedAt=result.updated_at;
+  syncedSaveStamp=stamp;
+  writeSyncMeta();
+  syncConflict=false;syncReady=true;
+  cloudStatus('同期済み · '+formatCloudTime(cloudUpdatedAt));
+  if(localSaveStamp>stamp) scheduleSync();
+  return true;
+}
+function scheduleSync(){
+  if(!syncReady||!syncUser||syncConflict)return;
+  if(syncTimer)clearTimeout(syncTimer);
+  syncTimer=setTimeout(async()=>{
+    if(syncBusy)return;
+    syncBusy=true;
+    try{await pushLocalToCloud();}finally{syncBusy=false;}
+  },1200);
+}
+async function syncNow(){
+  if(!syncUser)return;
+  if(!syncReady){
+    await initializeCloudSync(!!localStorage.getItem(KEY));
+    if(!syncReady)return;
+  }
+  if(syncBusy)return;
+  if(syncTimer){clearTimeout(syncTimer);syncTimer=null;}
+  syncBusy=true;
+  try{
+    const remote=await fetchCloudRow();
+    if(remote && syncRevision!==null && Number(remote.revision)!==syncRevision){
+      syncReady=false;syncConflict=true;
+      cloudStatus('別の端末で更新されています。勝手な上書きはしていません。復元または保存を選んでください。');
+      return;
+    }
+    if(remote && syncRevision===null){
+      syncReady=false;syncConflict=true;
+      cloudStatus('クラウド側にもデータがあります。復元または保存を選んでください。');
+      return;
+    }
+    await pushLocalToCloud();
+  }catch(e){cloudStatus('同期できませんでした。端末内のデータは保持されています。');console.error(e);}
+  finally{syncBusy=false;}
+}
+async function restoreCloudToDevice(){
+  if(!syncUser)return;
+  if(!confirm('クラウドのデータで、この端末のデータを置き換えます。事前に必要ならバックアップを保存してください。続けますか？'))return;
+  try{
+    const remote=await fetchCloudRow();
+    if(!remote){alert('クラウドに復元できるデータがありません。');return;}
+    await applyRemote(remote);
+  }catch(e){alert('クラウドから復元できませんでした。端末内のデータは変更していません。');console.error(e);}
+}
+async function uploadDeviceToCloud(){
+  if(!syncUser)return;
+  if(!confirm('この端末のデータをクラウドに保存します。クラウド側のデータを更新する場合があります。続けますか？'))return;
+  try{
+    const remote=await fetchCloudRow();
+    syncRevision=remote?Number(remote.revision):null;
+    syncReady=true;syncConflict=false;
+    localSaveStamp=Date.now();
+    await pushLocalToCloud();
+  }catch(e){cloudStatus('クラウドの確認に失敗しました。端末内のデータは保持されています。');console.error(e);}
+}
+
 async function familyLogin(){
   const email=document.getElementById('syncEmail').value.trim();
   const password=document.getElementById('syncPassword').value;
@@ -134,20 +349,24 @@ async function familySignUp(){
 }
 async function familyLogout(){
   await supabaseClient.auth.signOut();
-  syncUser=null;appInitialized=false;KEY=null;
+  syncUser=null;appInitialized=false;KEY=null;syncReady=false;syncConflict=false;syncRevision=null;if(syncTimer)clearTimeout(syncTimer);
   document.body.classList.remove('family-authenticated');
   document.getElementById('syncPassword').value='';
   syncStatus('ログアウトしました。');
 }
 async function syncLogout(){ return familyLogout(); }
-function scheduleSync(){}
-async function syncNow(){syncStatus('クラウド同期は停止中です。');}
   let state={startDay:null,cycles:{},events:[],size:'medium'};
 let input='0', mode='expense', historyMode='daily';
 const CURRENCIES={JPY:{symbol:'¥',locale:'ja-JP'},USD:{symbol:'$',locale:'en-US'},CAD:{symbol:'CA$',locale:'en-CA'},GBP:{symbol:'£',locale:'en-GB'},EUR:{symbol:'€',locale:'de-DE'}};
 const currencySymbol=()=>CURRENCIES[state.currency]?.symbol||'¥';
 const yen=n=>Number(n||0).toLocaleString(CURRENCIES[state.currency]?.locale||'ja-JP',{maximumFractionDigits:0});
-function save(){if(!KEY)return;localStorage.setItem(KEY,JSON.stringify(state));scheduleSync()}
+function save(){
+  if(!KEY)return;
+  localStorage.setItem(KEY,JSON.stringify(state));
+  localSaveStamp=Date.now();
+  writeSyncMeta();
+  scheduleSync();
+}
 function changeCurrency(){const next=document.getElementById('currencySelect').value;if(next===state.currency)return;if(!confirm('通貨を「'+next+'」に切り替えます。金額は換算されず、通貨ごとに別々の家計簿として保存されます。切り替えますか？')){document.getElementById('currencySelect').value=state.currency;return;}state.currency=next;if(!state.ledgers[next])state.ledgers[next]={cycles:{},events:[]};save();render();alert('通貨を切り替えました。');}
 function daysInMonth(y,m){return new Date(y,m+1,0).getDate()}
 function cycleStart(d=new Date()){
@@ -220,10 +439,11 @@ function exportBackup(){
 
 
 function initApp(){const sel=document.getElementById('startDay');if(!sel.options.length){for(let i=1;i<=31;i++)sel.innerHTML+=`<option value="${i}">${i}日</option>`;sel.innerHTML+='<option value="99">月末</option>';}if(!state.startDay){const d=new Date().getDate();sel.value=d;state.startDay=d;save()}else sel.value=state.startDay===99?99:state.startDay;setSize(state.size);render();}
+window.addEventListener('online',()=>{if(syncUser&&syncReady&&!syncConflict)syncNow();});
 (async function startFamilyApp(){
   supabaseClient.auth.onAuthStateChange((event,session)=>{
     if(session && !appInitialized){familyLoadUser(session.user);}
-    if(!session && appInitialized){syncUser=null;appInitialized=false;KEY=null;document.body.classList.remove('family-authenticated');}
+    if(!session && appInitialized){syncUser=null;appInitialized=false;KEY=null;syncReady=false;syncConflict=false;syncRevision=null;if(syncTimer)clearTimeout(syncTimer);document.body.classList.remove('family-authenticated');}
   });
   const {data,error}=await supabaseClient.auth.getSession();
   if(!error && data.session){familyLoadUser(data.session.user);}
