@@ -128,8 +128,15 @@ function attachLedgerAliases(){
 }
 function hasMeaningfulLocalData(v){
   if(!v)return false;
+
   const ledgers=v.ledgers||{};
-  return Object.values(ledgers).some(x=>Object.keys(x.cycles||{}).length>0 || (x.events||[]).length>0) || !!v.startDay;
+
+  return Object.values(ledgers).some(x=>{
+    const hasEvents=(x.events||[]).length>0;
+    const hasIncome=Object.values(x.cycles||{}).some(c=>Number(c.income)>0);
+
+    return hasEvents || hasIncome;
+  });
 }
 
 function syncStatus(message){
@@ -181,7 +188,16 @@ async function initializeCloudSync(hadLocal){
     }
 
     const localRaw=localStorage.getItem(KEY);
+    const remoteHasData=hasMeaningfulLocalData(remote.payload);
 
+    if((!hadLocal || !localRaw) && !remoteHasData){
+      syncRevision=Number(remote.revision);
+      cloudUpdatedAt=remote.updated_at;
+      syncReady=false;
+      syncConflict=true;
+      cloudStatus('クラウドに実際の収入・支出データはありません。端末内のデータは保持し、空のクラウドデータを自動復元しません。');
+      return;
+    }
     if(!hadLocal || !localRaw){
       state=normalizeFamilyState(remote.payload);
       attachLedgerAliases();
@@ -305,12 +321,27 @@ async function syncNow(){
 }
 async function restoreCloudToDevice(){
   if(!syncUser)return;
-  if(!confirm('クラウドのデータで、この端末のデータを置き換えます。事前に必要ならバックアップを保存してください。続けますか？'))return;
   try{
     const remote=await fetchCloudRow();
-    if(!remote){alert('クラウドに復元できるデータがありません。');return;}
+
+    if(!remote){
+      alert('クラウドに復元できるデータがありません。');
+      return;
+    }
+
+    if(!hasMeaningfulLocalData(remote.payload)){
+      alert('クラウドに実際の収入・支出データがありません。端末内のデータを保護するため、復元を中止しました。');
+      cloudStatus('クラウドに実際の収入・支出データがないため、復元を中止しました。端末内のデータは変更していません。');
+      return;
+    }
+
+    if(!confirm('クラウドの収入・支出データで、この端末のデータを置き換えます。事前に必要ならバックアップを保存してください。続けますか？'))return;
+
     await applyRemote(remote);
-  }catch(e){alert('クラウドから復元できませんでした。端末内のデータは変更していません。');console.error(e);}
+  }catch(e){
+    alert('クラウドから復元できませんでした。端末内のデータは変更していません。');
+    console.error(e);
+  }
 }
 async function uploadDeviceToCloud(){
   if(!syncUser)return;
