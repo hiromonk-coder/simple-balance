@@ -361,47 +361,68 @@ async function restoreCloudToDevice(){
   }
 }
 async function uploadDeviceToCloud(){
-  if(!syncUser)return;
+  if(!syncUser || !KEY)return;
+  if(syncBusy)return;
+
+  syncBusy=true;
+
   try{
     const remote=await fetchCloudRow();
 
-    if(remote && syncRevision!==null &&
-       Number(remote.revision)!==syncRevision){
+    if(!remote){
       syncReady=false;
       syncConflict=true;
-      cloudStatus(
-        'クラウド側のデータが、この端末で確認した版から更新されています。上書きせず停止しました。先に復元するか、内容を確認してください。'
-      );
-      alert('クラウド側のデータが更新されています。安全のため保存を中止しました。');
+      cloudStatus('確認済みのクラウドデータが見つかりません。保存を中止しました。');
+      alert('クラウドデータが見つかりません。安全のため保存を中止しました。');
       return;
     }
 
-    if(remote && syncRevision===null){
+    if(syncRevision===null){
+      if(Number(remote.revision)!==6 || hasMeaningfulLocalData(remote.payload)){
+        syncReady=false;
+        syncConflict=true;
+        cloudStatus('クラウドの版または内容が想定と異なります。保存を中止しました。');
+        alert('クラウドが確認時の空データ（revision 6）と一致しません。保存を中止しました。');
+        return;
+      }
+    }else if(Number(remote.revision)!==syncRevision){
       syncReady=false;
       syncConflict=true;
-      cloudStatus('クラウドデータの確認が必要です。先にクラウドから復元してください。');
-      alert('クラウドデータの版をまだ確認できていません。上書きせず停止しました。');
+      cloudStatus('クラウド側のデータが更新されています。保存を中止しました。');
+      alert('クラウド側の版が異なります。安全のため保存を中止しました。');
       return;
     }
 
-    const message=remote
-      ? 'クラウドの現在の版（revision '+remote.revision+'）を確認しました。この端末のデータで更新します。続けますか？'
-      : 'クラウドにデータはありません。この端末のデータを新しく保存します。続けますか？';
+    if(!hasMeaningfulLocalData(state)){
+      syncReady=false;
+      syncConflict=true;
+      alert('この端末に収入・支出データがありません。保存を中止しました。');
+      return;
+    }
+
+    const message=syncRevision===null
+      ? '本人用クラウドの空のデータ（revision 6）を確認しました。\n\nこの端末のバックアップ内容でクラウドを更新します。続けますか？'
+      : 'クラウドの現在の版（revision '+remote.revision+'）を確認しました。この端末のデータで更新します。続けますか？';
 
     if(!confirm(message))return;
 
-    syncRevision=remote?Number(remote.revision):null;
+    syncRevision=Number(remote.revision);
     syncReady=true;
     syncConflict=false;
     localSaveStamp=Date.now();
+
     await pushLocalToCloud();
+
   }catch(e){
+    syncReady=false;
+    syncConflict=true;
     cloudStatus('クラウドの確認に失敗しました。端末内のデータは保持されています。');
     console.error(e);
+    alert('クラウドの確認に失敗しました。端末内のデータは変更していません。');
+  }finally{
+    syncBusy=false;
   }
-
 }
-
 async function familyLogin(){
   const email=document.getElementById('syncEmail').value.trim();
   const password=document.getElementById('syncPassword').value;
