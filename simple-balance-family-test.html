@@ -360,6 +360,7 @@ async function restoreCloudToDevice(){
     console.error(e);
   }
 }
+
 async function uploadDeviceToCloud(){
   if(!syncUser || !KEY)return;
   if(syncBusy)return;
@@ -423,6 +424,7 @@ async function uploadDeviceToCloud(){
     syncBusy=false;
   }
 }
+
 async function familyLogin(){
   const email=document.getElementById('syncEmail').value.trim();
   const password=document.getElementById('syncPassword').value;
