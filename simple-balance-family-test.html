@@ -72,8 +72,25 @@ body.family-authenticated #familyGate{display:none}</style>
   <button class="secondary" style="width:100%;margin-top:8px" onclick="familyLogout()">ログアウト</button>
 </div>
 
-<label>バックアップ</label><p class="small muted">このアカウント専用のバックアップを書き出せます。</p><button class="secondary" style="width:100%;margin-top:8px" onclick="exportBackup()">バックアップを保存</button></div><div class="card small muted">入力内容はまずこの端末に保存され、通信できるときにログイン中のアカウント専用クラウドへ同期されます。新しい端末では同じメールアドレスでログインして復元できます。バックアップファイルも念のため保管してください。</div>
-</section>
+<label>バックアップ</label>
+<p class="small muted">このアカウント専用のバックアップを保存・読み込みできます。</p>
+
+<button class="secondary" style="width:100%;margin-top:8px" onclick="exportBackup()">
+  バックアップを保存
+</button>
+
+<button class="secondary" style="width:100%;margin-top:8px" onclick="document.getElementById('backupImportFile').click()">
+  バックアップを読み込む
+</button>
+
+<input
+  id="backupImportFile"
+  type="file"
+  accept=".json,application/json"
+  style="display:none"
+  onchange="importBackup(this)"
+>
+</div></section>
 </main>
 </div></div>
 <div id="modal" class="modal"><div class="sheet"><div class="row"><h2 id="modalTitle">支出</h2><button onclick="closeModal()">✕</button></div><div class="amount" id="amount">0</div><div class="numpad">
@@ -503,7 +520,109 @@ function exportBackup(){
 }
 
 
+async function importBackup(input){
+  try{
+    if(!syncUser || !KEY){
+      alert('先に家族アカウントへログインしてください。');
+      return;
+    }
 
+    const file=input.files && input.files[0];
+    if(!file)return;
+
+    const text=await file.text();
+    const backup=JSON.parse(text);
+
+    if(
+      !backup ||
+      backup.app!=='simple-balance' ||
+      backup.formatVersion!==1 ||
+      !backup.data ||
+      typeof backup.data!=='object'
+    ){
+      throw new Error('バックアップ形式が正しくありません。');
+    }
+
+    const imported=normalizeFamilyState(
+      JSON.parse(JSON.stringify(backup.data))
+    );
+
+    const allowedCurrencies=['JPY','USD','CAD','GBP','EUR'];
+
+    if(!allowedCurrencies.includes(imported.currency)){
+      throw new Error('通貨の設定が正しくありません。');
+    }
+
+    if(
+      !Number.isInteger(Number(imported.startDay)) ||
+      !(Number(imported.startDay)>=1 && Number(imported.startDay)<=31) &&
+      Number(imported.startDay)!==99
+    ){
+      throw new Error('毎月の起点日の設定が正しくありません。');
+    }
+
+    if(!imported.ledgers || typeof imported.ledgers!=='object'){
+      throw new Error('家計簿データが見つかりません。');
+    }
+
+    for(const ledger of Object.values(imported.ledgers)){
+      if(
+        !ledger ||
+        typeof ledger!=='object' ||
+        !Array.isArray(ledger.events) ||
+        !ledger.cycles ||
+        typeof ledger.cycles!=='object'
+      ){
+        throw new Error('家計簿データの形式が正しくありません。');
+      }
+    }
+
+    if(!hasMeaningfulLocalData(imported)){
+      throw new Error('収入・支出の記録が含まれていません。');
+    }
+
+    if(!confirm(
+      'このバックアップの内容で、現在ログイン中のアカウントの端末内データを置き換えます。\n\n' +
+      'クラウドのデータは変更しません。\n' +
+      '読み込みを続けますか？'
+    )){
+      return;
+    }
+
+    if(syncTimer){
+      clearTimeout(syncTimer);
+      syncTimer=null;
+    }
+
+    state=imported;
+    attachLedgerAliases();
+
+    localStorage.setItem(KEY,JSON.stringify(state));
+
+    localSaveStamp=Date.now();
+    syncedSaveStamp=0;
+    syncReady=false;
+    syncConflict=true;
+
+    writeSyncMeta();
+    initApp();
+
+    cloudStatus(
+      'バックアップをこの端末に読み込みました。クラウドにはまだ保存していません。内容を確認してください。'
+    );
+
+    alert(
+      'バックアップを読み込みました。\n' +
+      'クラウドにはまだ保存していません。'
+    );
+
+  }catch(e){
+    console.error('backup import',e);
+    alert('バックアップを読み込めませんでした。\nファイルの内容を確認してください。');
+  }finally{
+    if(input)input.value='';
+  }
+}
 function initApp(){
   const sel=document.getElementById('startDay');
 
